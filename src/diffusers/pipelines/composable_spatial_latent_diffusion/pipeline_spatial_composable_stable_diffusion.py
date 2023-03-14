@@ -11,7 +11,7 @@ import torchvision
 # from ...pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 # from ...schedulers import KarrasDiffusionSchedulers
 from ...utils import logging, randn_tensor
-from . import ComposableStableDiffusionPipelineOutput
+from . import SpatiallyComposableStableDiffusionPipelineOutput
 from ..stable_diffusion.pipeline_stable_diffusion import StableDiffusionPipeline
 
 
@@ -60,7 +60,7 @@ EXAMPLE_DOC_STRING = """
 """
 
 
-class ComposableStableDiffusionPipeline(StableDiffusionPipeline):
+class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
     r"""
     Pipeline for text-to-image generation with spatial composition.
 
@@ -324,4 +324,4 @@ class ComposableStableDiffusionPipeline(StableDiffusionPipeline):
         if not return_dict:
             return (image, has_nsfw_concept)
 
-        return ComposableStableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept), output, has_nsfw_concept
+        return SpatiallyComposableStableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept), output, has_nsfw_concept

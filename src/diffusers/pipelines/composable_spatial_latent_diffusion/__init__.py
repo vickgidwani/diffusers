@@ -9,7 +9,7 @@ from ...utils import BaseOutput, is_torch_available, is_transformers_available
 
 
 @dataclass
-class ComposableStableDiffusionPipelineOutput(BaseOutput):
+class SpatiallyComposableStableDiffusionPipelineOutput(BaseOutput):
     """
     Output class for Stable Diffusion pipelines.
 
@@ -27,4 +27,4 @@ class ComposableStableDiffusionPipelineOutput(BaseOutput):
 
 
 if is_transformers_available() and is_torch_available():
-    from .pipeline_composable_stable_diffusion import ComposableStableDiffusionPipeline
+    from .pipeline_composable_stable_diffusion import SpatiallyComposableStableDiffusionPipeline

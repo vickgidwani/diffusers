@@ -27,4 +27,4 @@ class SpatiallyComposableStableDiffusionPipelineOutput(BaseOutput):
 
 
 if is_transformers_available() and is_torch_available():
-    from .pipeline_composable_stable_diffusion import SpatiallyComposableStableDiffusionPipeline
+    from .pipeline_spatial_composable_stable_diffusion import SpatiallyComposableStableDiffusionPipeline

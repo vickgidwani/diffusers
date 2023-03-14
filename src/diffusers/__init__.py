@@ -137,6 +137,7 @@ else:
         VersatileDiffusionPipeline,
         VersatileDiffusionTextToImagePipeline,
         VQDiffusionPipeline,
+        SpatiallyComposableStableDiffusionPipeline,
     )
 
 try:

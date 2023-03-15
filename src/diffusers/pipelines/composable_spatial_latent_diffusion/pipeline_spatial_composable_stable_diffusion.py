@@ -258,13 +258,9 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
 
                 # create aggregate noise predictions for each prompt with combination of
                 # unconditional noise predication and scaled text-guided noise prediciton
-                noise_pred_unconds = []
-                noise_pred_texts = []
                 noise_preds = []
                 for i in range(len(prompt)):
                     noise_pred_uncond, noise_pred_text = noise_preds[i].chunk(2)
-                    noise_pred_unconds.append(noise_pred_uncond)
-                    noise_pred_texts.append(noise_pred_text)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
                     noise_preds.append(noise_pred)
 

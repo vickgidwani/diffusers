@@ -59,6 +59,33 @@ EXAMPLE_DOC_STRING = """
         ```
 """
 
+class SpatialFilter:
+    def __init__(self, pos_str: str, mix_val: float):
+        pos_split = pos_str.split("-")
+        pos_div = pos_split[0].split(":")
+        pos_target = pos_split[1].split(":")
+        self.y_divisions = int(pos_div[0])
+        self.x_divisions = int(pos_div[1])
+        self.y_target = int(pos_target[0])
+        self.x_target = int(pos_target[1])
+
+        assert self.y_target < self.y_divisions
+        assert self.x_target < self.x_divisions
+
+        self.weight = mix_val
+
+    def create_tensor(self, batch_size: int, num_channels: int, height: int, width: int, device: str) -> torch.Tensor:
+
+        tensor = torch.zeros(batch_size, num_channels, height, width).to(device).to(torch.float16)
+
+        y_start = int(self.y_target / self.y_divisions * height)
+        y_end = int((self.y_target+1) / self.y_divisions * height)
+        x_start = int(self.x_target / self.x_divisions * width)
+        x_end = int((self.x_target+1) / self.x_divisions * width)
+
+        tensor[:, :, y_start:y_end, x_start:x_end] = self.weight
+
+        return tensor
 
 class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
     r"""
@@ -212,6 +239,8 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
+        composition_filters = [SpatialFilter(p, m).create_tensor(batch_size, 4, height // 8, width // 8, device) for p, m in zip(pos, mix_val)]
+
         # 7. Denoising loop
         #num_warmup_steps = len(timesteps) - num_inference_steps# * self.scheduler.order
         for i, t in enumerate(self.progress_bar(timesteps)):
@@ -324,4 +353,4 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
         if not return_dict:
             return (image, has_nsfw_concept)
 
-        return SpatiallyComposableStableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept), output, has_nsfw_concept
+        return SpatiallyComposableStableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)

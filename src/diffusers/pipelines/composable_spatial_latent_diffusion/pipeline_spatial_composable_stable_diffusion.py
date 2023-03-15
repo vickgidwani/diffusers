@@ -260,75 +260,18 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
                 # unconditional noise predication and scaled text-guided noise prediciton
                 noise_pred_unconds = []
                 noise_pred_texts = []
+                noise_preds = []
                 for i in range(len(prompt)):
                     noise_pred_uncond, noise_pred_text = noise_preds[i].chunk(2)
                     noise_pred_unconds.append(noise_pred_uncond)
                     noise_pred_texts.append(noise_pred_text)
-                noise_preds = []
-                for i in range(len(prompt)):
-                    noise_pred = noise_pred_unconds[i] + guidance_scale * (noise_pred_texts[i] - noise_pred_unconds[i])
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
                     noise_preds.append(noise_pred)
 
-
-                # calculate masks as torch tensors
-                #TODO: create a filter based on pos
-                mask_list = []
-                for i in range(len(prompt)):
-                    pos_split = pos[i].split("-")
-                    # pos_div = [num_height_splits, num_width_splits]
-                    pos_div = pos_split[0].split(":")
-
-                    # pos_target = [height_split_index, width_split_index]
-                    pos_target = pos_split[1].split(":")
-
-                    # assemble the filter mask for each prompt
-                    one_filter = None
-                    zero_f = False
-
-                    # iterate through height splits
-                    for y in range(int(pos_div[0])):
-                        one_line = None
-                        zero = False
-
-                        # iterate through width splits
-                        for x in range(int(pos_div[1])):
-
-                            # we are currently targeting the desired section
-                            if (y == int(pos_target[0]) and x == int(pos_target[1])):
-                                if zero:
-                                    one_block = torch.ones(batch_size, 4, (height//8) // int(pos_div[0]), (width//8) // int(pos_div[1])).to(device).to(torch.float16) * mix_val[i]
-                                    one_line = torch.cat((one_line, one_block), 3)
-                                else:
-                                    zero = True
-                                    one_block = torch.ones(batch_size, 4, (height//8) // int(pos_div[0]), (width//8) // int(pos_div[1])).to(device).to(torch.float16) * mix_val[i]
-                                    one_line = one_block
-                            
-                            # we are not in the desired section
-                            else:
-                                if zero:
-                                    one_block = torch.zeros(batch_size, 4, (height//8) // int(pos_div[0]), (width//8) // int(pos_div[1])).to(device).to(torch.float16)
-                                    one_line = torch.cat((one_line, one_block), 3)
-                                else:
-                                    zero = True
-                                    one_block = torch.zeros(batch_size, 4, (height//8) // int(pos_div[0]), (width//8) // int(pos_div[1])).to(device).to(torch.float16)
-                                    one_line = one_block
-
-                        # if there are any unassigned splits, make sure they are accounted for here
-                        one_block = torch.zeros(batch_size, 4, (height//8) // int(pos_div[0]), (width//8) - one_line.size()[3]).to(device).to(torch.float16)
-                        one_line = torch.cat((one_line, one_block), 3)
-                        if zero_f:
-                            one_filter = torch.cat((one_filter, one_line), 2)
-                        else:
-                            zero_f = True
-                            one_filter = one_line
-                    mask_list.append(one_filter)
-                for i in range(len(mask_list)):
-                    torchvision.transforms.functional.to_pil_image(mask_list[i][0]*256).save(str(i)+".png")
-                
                 # apply guided noise pred to separate masks
-                result = noise_preds[0] * mask_list[0]
+                result = noise_preds[0] * composition_filters[0]
                 for i in range(1, len(prompt)):
-                    result += noise_preds[i] * mask_list[i]
+                    result += noise_preds[i] * composition_filters[i]
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(result, t, latents, **extra_step_kwargs).prev_sample
@@ -347,8 +290,6 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
         if output_type == "pil":
             image = self.numpy_to_pil(image)
             output = []
-            for i in mask_list:
-                output.append(torchvision.transforms.functional.to_pil_image(i[0]*256))
 
         if not return_dict:
             return (image, has_nsfw_concept)

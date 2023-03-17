@@ -123,7 +123,8 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
         self,
         prompt: Union[List[str], List[List[str]]],
         pos: List[str],
-        mix_val: Union[float, List[float]] = 0.5,
+        mix_val: Union[float, List[float]],
+        mask_guidance_bootstrapping_ratio: float = 0.2,
         height: Optional[int] = None,
         width: Optional[int] = None,
         num_inference_steps: int = 50,
@@ -243,7 +244,8 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
 
         # 7. Denoising loop
         #num_warmup_steps = len(timesteps) - num_inference_steps# * self.scheduler.order
-        for i, t in enumerate(self.progress_bar(timesteps)):
+        num_mask_guidance_bs_steps = int(mask_guidance_bootstrapping_ratio * i)
+        for j, t in enumerate(self.progress_bar(timesteps)):
             # expand the latents if we are doing classifier free guidance
             latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
@@ -251,30 +253,32 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
             # predict the noise residual
             noise_preds = []
             for i in range(len(prompt)):
-                noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings[i]).sample
-                noise_preds.append(noise_pred)
+                noise_preds.append(self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings[i]).sample)
             # perform guidance
             if do_classifier_free_guidance:
+                # init with unconditional noise
+                noise_pred_agg = noise_preds[0].chunk(2)[0]
 
-                # create aggregate noise predictions for each prompt with combination of
-                # unconditional noise predication and scaled text-guided noise prediciton
-                noise_preds = []
-                for i in range(len(prompt)):
-                    noise_pred_uncond, noise_pred_text = noise_preds[i].chunk(2)
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-                    noise_preds.append(noise_pred)
-
-                # apply guided noise pred to separate masks
-                result = noise_preds[0] * composition_filters[0]
-                for i in range(1, len(prompt)):
-                    result += noise_preds[i] * composition_filters[i]
+                # only attend to masks during bootstrapping
+                if j < num_mask_guidance_bs_steps:
+                    # assume the first prompt is the 'background' and skip it during bootstrapping
+                    for i in range(1, len(prompt)):
+                        noise_pred_uncond, noise_pred_cond = noise_preds[i].chunk(2)
+                        noise_pred_agg += guidance_scale * (noise_pred_cond - noise_pred_uncond) * composition_filters[i] / (1-mix_val[0])
+                else:
+                    # create aggregate noise prediction for each prompt with combination of
+                    # unconditional noise predication and scaled text-conditioned noise prediction
+                    # apply masks
+                    for i in range(len(prompt)):
+                        noise_pred_uncond, noise_pred_cond = noise_preds[i].chunk(2)
+                        noise_pred_agg += guidance_scale * (noise_pred_cond - noise_pred_uncond) * composition_filters[i]
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(result, t, latents, **extra_step_kwargs).prev_sample
+                latents = self.scheduler.step(noise_pred_agg, t, latents, **extra_step_kwargs).prev_sample
         
                 # call the callback, if provided
-                if callback is not None and i % callback_steps == 0:
-                    callback(i, t, latents)
+                if callback is not None and j % callback_steps == 0:
+                    callback(j, t, latents)
 
         # 8. Post-processing
         image = self.decode_latents(latents)

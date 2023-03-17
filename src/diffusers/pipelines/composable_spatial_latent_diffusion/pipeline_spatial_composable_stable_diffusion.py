@@ -246,6 +246,7 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
         #num_warmup_steps = len(timesteps) - num_inference_steps# * self.scheduler.order
         num_mask_guidance_bs_steps = int(mask_guidance_bootstrapping_ratio * num_inference_steps)
         print(num_mask_guidance_bs_steps)
+        logger.warning(num_mask_guidance_bs_steps)
         for j, t in enumerate(self.progress_bar(timesteps)):
             # expand the latents if we are doing classifier free guidance
             latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents

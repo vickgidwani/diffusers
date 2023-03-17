@@ -64,6 +64,7 @@ else:
         StableUnCLIPImg2ImgPipeline,
         StableUnCLIPPipeline,
     )
+    from .composable_spatial_latent_diffusion import SpatiallyComposableStableDiffusionPipeline
     from .stable_diffusion_safe import StableDiffusionPipelineSafe
     from .unclip import UnCLIPImageVariationPipeline, UnCLIPPipeline
     from .versatile_diffusion import (

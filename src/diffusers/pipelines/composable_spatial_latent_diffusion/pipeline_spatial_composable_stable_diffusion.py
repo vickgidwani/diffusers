@@ -266,7 +266,7 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
                     # assume the first prompt is the 'background' and skip it during bootstrapping
                     for i in range(1, len(prompt)):
                         noise_pred_uncond, noise_pred_cond = noise_preds[i].chunk(2)
-                        noise_pred_agg += guidance_scale * (noise_pred_cond - noise_pred_uncond) * composition_filters[i] / (1-mix_val[0])
+                        noise_pred_agg += guidance_scale * (noise_pred_cond - noise_pred_uncond) * composition_filters[i]
                 else:
                     # create aggregate noise prediction for each prompt with combination of
                     # unconditional noise predication and scaled text-conditioned noise prediction

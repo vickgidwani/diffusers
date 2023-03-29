@@ -34,7 +34,7 @@ from .safety_checker import StableDiffusionSafetyChecker
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
-def prepare_mask_and_masked_image(image, mask, mask_content):
+def prepare_mask_and_masked_image(image, mask, mask_content, mask_fill_interp):
     """
     Prepares a pair (image, mask) to be consumed by the Stable Diffusion pipeline. This means that those inputs will be
     converted to ``torch.Tensor`` with shapes ``batch x channels x height x width`` where ``channels`` is ``3`` for the
@@ -137,21 +137,14 @@ def prepare_mask_and_masked_image(image, mask, mask_content):
         masked_image = image * (mask < 0.5)
     elif mask_content == 'fill':
         masked_image = image
-    elif mask_content == 'noise':
+    elif mask_content == 'fill_interp':
         masked_image = image * (mask < 0.5)
-        noise = torch.randn_like(mask) * mask
-        masked_image = torch.add(masked_image, noise)
+        masked_image = torch.lerp(image, masked_image, mask_fill_interp)
     elif mask_content == 'noise_interp':
         masked_image = image * (mask < 0.5)
-        noise = torch.randn_like(mask) * mask
+        noise = torch.randn_like(image) * mask
         masked_image = torch.add(masked_image, noise)
-        masked_image = torch.lerp(image, masked_image, 0.25)
-
-    transform = torchvision.transforms.ToPILImage()
-    img = transform(masked_image.squeeze())
-    img.show()
-    img = transform(mask.squeeze())
-    img.show()
+        masked_image = torch.lerp(image, masked_image, mask_fill_interp)
 
     return mask, masked_image
 
@@ -673,6 +666,7 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
         mask_content: str = 'clear',
+        mask_fill_interp: float = 0.2,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -823,7 +817,7 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
         )
 
         # 4. Preprocess mask and image
-        mask, masked_image = prepare_mask_and_masked_image(image, mask_image, mask_content)
+        mask, masked_image = prepare_mask_and_masked_image(image, mask_image, mask_content, mask_fill_interp)
 
         # 5. set timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)

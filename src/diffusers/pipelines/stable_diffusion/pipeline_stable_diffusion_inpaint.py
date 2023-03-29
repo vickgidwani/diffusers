@@ -135,10 +135,19 @@ def prepare_mask_and_masked_image(image, mask, mask_content, mask_fill_interp):
 
     if mask_content == 'clear':
         masked_image = image * (mask < 0.5)
-    elif mask_content == 'fill':
+    if mask_content == 'fill':
+        masked_image = torch.add(image * (mask < 0.5), mask)
+    elif mask_content == 'original':
         masked_image = image
-    elif mask_content == 'fill_interp':
+    elif mask_content == 'noise':
         masked_image = image * (mask < 0.5)
+        noise = torch.randn_like(image) * mask
+        masked_image = torch.add(masked_image, noise)
+    elif mask_content == 'orig_clear_interp':
+        masked_image = image * (mask < 0.5)
+        masked_image = torch.lerp(image, masked_image, mask_fill_interp)
+    elif mask_content == 'orig_fill_interp':
+        masked_image = torch.add(image * (mask < 0.5), mask)
         masked_image = torch.lerp(image, masked_image, mask_fill_interp)
     elif mask_content == 'noise_interp':
         masked_image = image * (mask < 0.5)

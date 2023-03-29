@@ -34,7 +34,7 @@ from .safety_checker import StableDiffusionSafetyChecker
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
-def prepare_mask_and_masked_image(image, mask, mask_content, mask_fill_interp):
+def prepare_mask_and_masked_image(image, mask, mask_content, mask_fill_interp, noise_scale):
     """
     Prepares a pair (image, mask) to be consumed by the Stable Diffusion pipeline. This means that those inputs will be
     converted to ``torch.Tensor`` with shapes ``batch x channels x height x width`` where ``channels`` is ``3`` for the
@@ -141,8 +141,11 @@ def prepare_mask_and_masked_image(image, mask, mask_content, mask_fill_interp):
         masked_image = image
     elif mask_content == 'noise':
         masked_image = image * (mask < 0.5)
-        noise = torch.randn_like(image) * mask
+        noise = (torch.randn_like(image) / noise_scale) * mask
         masked_image = torch.add(masked_image, noise)
+    elif mask_content == 'added_noise':
+        noise = (torch.randn_like(image) / noise_scale) * mask
+        masked_image = torch.add(image, noise)
     elif mask_content == 'orig_clear_interp':
         masked_image = image * (mask < 0.5)
         masked_image = torch.lerp(image, masked_image, mask_fill_interp)
@@ -151,7 +154,7 @@ def prepare_mask_and_masked_image(image, mask, mask_content, mask_fill_interp):
         masked_image = torch.lerp(image, masked_image, mask_fill_interp)
     elif mask_content == 'noise_interp':
         masked_image = image * (mask < 0.5)
-        noise = torch.randn_like(image) * mask
+        noise = (torch.randn_like(image) / noise_scale) * mask
         masked_image = torch.add(masked_image, noise)
         masked_image = torch.lerp(image, masked_image, mask_fill_interp)
 
@@ -676,6 +679,7 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
         callback_steps: int = 1,
         mask_content: str = 'clear',
         mask_fill_interp: float = 0.2,
+        noise_scale: float = 1.0,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -826,7 +830,7 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
         )
 
         # 4. Preprocess mask and image
-        mask, masked_image = prepare_mask_and_masked_image(image, mask_image, mask_content, mask_fill_interp)
+        mask, masked_image = prepare_mask_and_masked_image(image, mask_image, mask_content, mask_fill_interp, noise_scale)
 
         # 5. set timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)

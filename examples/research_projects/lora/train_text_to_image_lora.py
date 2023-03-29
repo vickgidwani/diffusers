@@ -43,7 +43,7 @@ from transformers import CLIPTextModel, CLIPTokenizer
 import diffusers
 from diffusers import AutoencoderKL, DDPMScheduler, DiffusionPipeline, UNet2DConditionModel
 from diffusers.loaders import AttnProcsLayers
-from diffusers.models.cross_attention import LoRACrossAttnProcessor
+from diffusers.models.attention_processor import LoRAAttnProcessor
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
@@ -536,17 +536,15 @@ def main():
                 block_id = int(name[len("down_blocks.")])
                 hidden_size = unet.config.block_out_channels[block_id]
 
-            lora_attn_procs[name] = LoRACrossAttnProcessor(
-                hidden_size=hidden_size, cross_attention_dim=cross_attention_dim
-            )
+            lora_attn_procs[name] = LoRAAttnProcessor(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
 
         unet.set_attn_processor(lora_attn_procs)
         lora_layers = AttnProcsLayers(unet.attn_processors)
 
     # Move unet, vae and text_encoder to device and cast to weight_dtype
-    unet.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
-    text_encoder.to(accelerator.device, dtype=weight_dtype)
+    if not args.train_text_encoder:
+        text_encoder.to(accelerator.device, dtype=weight_dtype)
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -584,7 +582,7 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
 
-    if args.peft:
+    if args.use_peft:
         # Optimizer creation
         params_to_optimize = (
             itertools.chain(unet.parameters(), text_encoder.parameters())
@@ -726,7 +724,7 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    if args.peft:
+    if args.use_peft:
         if args.train_text_encoder:
             unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
                 unet, text_encoder, optimizer, train_dataloader, lr_scheduler
@@ -844,7 +842,7 @@ def main():
                 # Backpropagate
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    if args.peft:
+                    if args.use_peft:
                         params_to_clip = (
                             itertools.chain(unet.parameters(), text_encoder.parameters())
                             if args.train_text_encoder
@@ -924,18 +922,22 @@ def main():
     if accelerator.is_main_process:
         if args.use_peft:
             lora_config = {}
-            state_dict = get_peft_model_state_dict(unet, state_dict=accelerator.get_state_dict(unet))
-            lora_config["peft_config"] = unet.get_peft_config_as_dict(inference=True)
+            unwarpped_unet = accelerator.unwrap_model(unet)
+            state_dict = get_peft_model_state_dict(unwarpped_unet, state_dict=accelerator.get_state_dict(unet))
+            lora_config["peft_config"] = unwarpped_unet.get_peft_config_as_dict(inference=True)
             if args.train_text_encoder:
+                unwarpped_text_encoder = accelerator.unwrap_model(text_encoder)
                 text_encoder_state_dict = get_peft_model_state_dict(
-                    text_encoder, state_dict=accelerator.get_state_dict(text_encoder)
+                    unwarpped_text_encoder, state_dict=accelerator.get_state_dict(text_encoder)
                 )
                 text_encoder_state_dict = {f"text_encoder_{k}": v for k, v in text_encoder_state_dict.items()}
                 state_dict.update(text_encoder_state_dict)
-                lora_config["text_encoder_peft_config"] = text_encoder.get_peft_config_as_dict(inference=True)
+                lora_config["text_encoder_peft_config"] = unwarpped_text_encoder.get_peft_config_as_dict(
+                    inference=True
+                )
 
-            accelerator.save(state_dict, os.path.join(args.output_dir, f"{args.instance_prompt}_lora.pt"))
-            with open(os.path.join(args.output_dir, f"{args.instance_prompt}_lora_config.json"), "w") as f:
+            accelerator.save(state_dict, os.path.join(args.output_dir, f"{global_step}_lora.pt"))
+            with open(os.path.join(args.output_dir, f"{global_step}_lora_config.json"), "w") as f:
                 json.dump(lora_config, f)
         else:
             unet = unet.to(torch.float32)
@@ -959,12 +961,12 @@ def main():
 
     if args.use_peft:
 
-        def load_and_set_lora_ckpt(pipe, ckpt_dir, instance_prompt, device, dtype):
-            with open(f"{ckpt_dir}{instance_prompt}_lora_config.json", "r") as f:
+        def load_and_set_lora_ckpt(pipe, ckpt_dir, global_step, device, dtype):
+            with open(os.path.join(args.output_dir, f"{global_step}_lora_config.json"), "r") as f:
                 lora_config = json.load(f)
             print(lora_config)
 
-            checkpoint = f"{ckpt_dir}{instance_prompt}_lora.pt"
+            checkpoint = os.path.join(args.output_dir, f"{global_step}_lora.pt")
             lora_checkpoint_sd = torch.load(checkpoint)
             unet_lora_ds = {k: v for k, v in lora_checkpoint_sd.items() if "text_encoder_" not in k}
             text_encoder_lora_ds = {
@@ -987,9 +989,7 @@ def main():
             pipe.to(device)
             return pipe
 
-        pipeline = load_and_set_lora_ckpt(
-            pipeline, args.output_dir, args.instance_prompt, accelerator.device, weight_dtype
-        )
+        pipeline = load_and_set_lora_ckpt(pipeline, args.output_dir, global_step, accelerator.device, weight_dtype)
 
     else:
         pipeline = pipeline.to(accelerator.device)
@@ -997,7 +997,10 @@ def main():
         pipeline.unet.load_attn_procs(args.output_dir)
 
     # run inference
-    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
+    if args.seed is not None:
+        generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
+    else:
+        generator = None
     images = []
     for _ in range(args.num_validation_images):
         images.append(pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0])

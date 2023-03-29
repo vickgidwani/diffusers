@@ -417,6 +417,16 @@ def parse_args(input_args=None):
         ),
     )
 
+    parser.add_argument(
+        "--offset_noise",
+        action="store_true",
+        default=False,
+        help=(
+            "Fine-tuning against a modified noise"
+            " See: https://www.crosslabs.org//blog/diffusion-with-offset-noise for more information."
+        ),
+    )
+
     if input_args is not None:
         args = parser.parse_args(input_args)
     else:
@@ -943,7 +953,12 @@ def main(args):
                 latents = latents * vae.config.scaling_factor
 
                 # Sample noise that we'll add to the latents
-                noise = torch.randn_like(latents)
+                if args.offset_noise:
+                    noise = torch.randn_like(latents) + 0.1 * torch.randn(
+                        latents.shape[0], latents.shape[1], 1, 1, device=latents.device
+                    )
+                else:
+                    noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
                 # Sample a random timestep for each image
                 timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
@@ -1000,13 +1015,14 @@ def main(args):
                 progress_bar.update(1)
                 global_step += 1
 
-                if global_step % args.checkpointing_steps == 0:
-                    if accelerator.is_main_process:
+                if accelerator.is_main_process:
+                    if global_step % args.checkpointing_steps == 0:
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
-                if args.validation_prompt is not None and global_step % args.validation_steps == 0:
-                    log_validation(text_encoder, tokenizer, unet, vae, args, accelerator, weight_dtype, epoch)
+
+                    if args.validation_prompt is not None and global_step % args.validation_steps == 0:
+                        log_validation(text_encoder, tokenizer, unet, vae, args, accelerator, weight_dtype, epoch)
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)

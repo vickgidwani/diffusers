@@ -86,7 +86,7 @@ _deps = [
     "filelock",
     "flax>=0.4.1",
     "hf-doc-builder>=0.3.0",
-    "huggingface-hub>=0.13.0",
+    "huggingface-hub>=0.13.2",
     "requests-mock==1.10.0",
     "importlib_metadata",
     "isort>=5.5.4",
@@ -95,8 +95,10 @@ _deps = [
     "Jinja2",
     "k-diffusion>=0.0.12",
     "librosa",
+    "note-seq",
     "numpy",
     "parameterized",
+    "protobuf>=3.20.3,<4",
     "pytest",
     "pytest-timeout",
     "pytest-xdist",
@@ -182,13 +184,14 @@ extras = {}
 extras = {}
 extras["quality"] = deps_list("black", "isort", "ruff", "hf-doc-builder")
 extras["docs"] = deps_list("hf-doc-builder")
-extras["training"] = deps_list("accelerate", "datasets", "tensorboard", "Jinja2")
+extras["training"] = deps_list("accelerate", "datasets", "protobuf", "tensorboard", "Jinja2")
 extras["test"] = deps_list(
     "compel",
     "datasets",
     "Jinja2",
     "k-diffusion",
     "librosa",
+    "note-seq",
     "parameterized",
     "pytest",
     "pytest-timeout",

@@ -20,6 +20,7 @@ import PIL
 import torch
 from packaging import version
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
+import torchvision
 
 from ...configuration_utils import FrozenDict
 from ...models import AutoencoderKL, UNet2DConditionModel
@@ -33,7 +34,7 @@ from .safety_checker import StableDiffusionSafetyChecker
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
-def prepare_mask_and_masked_image(image, mask, mask_clear):
+def prepare_mask_and_masked_image(image, mask, mask_content):
     """
     Prepares a pair (image, mask) to be consumed by the Stable Diffusion pipeline. This means that those inputs will be
     converted to ``torch.Tensor`` with shapes ``batch x channels x height x width`` where ``channels`` is ``3`` for the
@@ -132,11 +133,25 @@ def prepare_mask_and_masked_image(image, mask, mask_clear):
         mask[mask >= 0.5] = 1
         mask = torch.from_numpy(mask)
 
-    print(mask)
-    if mask_clear:
+    if mask_content == 'clear':
         masked_image = image * (mask < 0.5)
-    else:
+    elif mask_content == 'fill':
         masked_image = image
+    elif mask_content == 'noise':
+        masked_image = image * (mask < 0.5)
+        noise = torch.randn_like(mask) * mask
+        masked_image = torch.add(masked_image, noise)
+    elif mask_content == 'noise_interp':
+        masked_image = image * (mask < 0.5)
+        noise = torch.randn_like(mask) * mask
+        masked_image = torch.add(masked_image, noise)
+        masked_image = torch.lerp(image, masked_image, 0.25)
+
+    transform = torchvision.transforms.ToPILImage()
+    img = transform(masked_image.squeeze())
+    img.show()
+    img = transform(mask.squeeze())
+    img.show()
 
     return mask, masked_image
 
@@ -657,7 +672,7 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
         return_dict: bool = True,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
-        mask_clear: bool = True,
+        mask_content: str = 'clear',
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -808,7 +823,7 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline):
         )
 
         # 4. Preprocess mask and image
-        mask, masked_image = prepare_mask_and_masked_image(image, mask_image, mask_clear)
+        mask, masked_image = prepare_mask_and_masked_image(image, mask_image, mask_content)
 
         # 5. set timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)

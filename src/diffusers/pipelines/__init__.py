@@ -26,7 +26,6 @@ else:
     from .pndm import PNDMPipeline
     from .repaint import RePaintPipeline
     from .score_sde_ve import ScoreSdeVePipeline
-    from .spectrogram_diffusion import SpectrogramDiffusionPipeline
     from .stochastic_karras_ve import KarrasVePipeline
 
 try:
@@ -45,14 +44,33 @@ except OptionalDependencyNotAvailable:
 else:
     from .alt_diffusion import AltDiffusionImg2ImgPipeline, AltDiffusionPipeline
     from .audioldm import AudioLDMPipeline
+    from .controlnet import (
+        StableDiffusionControlNetImg2ImgPipeline,
+        StableDiffusionControlNetInpaintPipeline,
+        StableDiffusionControlNetPipeline,
+    )
+    from .deepfloyd_if import (
+        IFImg2ImgPipeline,
+        IFImg2ImgSuperResolutionPipeline,
+        IFInpaintingPipeline,
+        IFInpaintingSuperResolutionPipeline,
+        IFPipeline,
+        IFSuperResolutionPipeline,
+    )
+    from .kandinsky import (
+        KandinskyImg2ImgPipeline,
+        KandinskyInpaintPipeline,
+        KandinskyPipeline,
+        KandinskyPriorPipeline,
+    )
     from .latent_diffusion import LDMTextToImagePipeline
     from .paint_by_example import PaintByExamplePipeline
     from .semantic_stable_diffusion import SemanticStableDiffusionPipeline
     from .stable_diffusion import (
         CycleDiffusionPipeline,
         StableDiffusionAttendAndExcitePipeline,
-        StableDiffusionControlNetPipeline,
         StableDiffusionDepth2ImgPipeline,
+        StableDiffusionDiffEditPipeline,
         StableDiffusionImageVariationPipeline,
         StableDiffusionImg2ImgPipeline,
         StableDiffusionInpaintPipeline,
@@ -70,8 +88,9 @@ else:
     )
     from .composable_spatial_latent_diffusion import SpatiallyComposableStableDiffusionPipeline
     from .stable_diffusion_safe import StableDiffusionPipelineSafe
-    from .text_to_video_synthesis import TextToVideoSDPipeline
+    from .text_to_video_synthesis import TextToVideoSDPipeline, TextToVideoZeroPipeline
     from .unclip import UnCLIPImageVariationPipeline, UnCLIPPipeline
+    from .unidiffuser import ImageTextPipelineOutput, UniDiffuserModel, UniDiffuserPipeline, UniDiffuserTextDecoder
     from .versatile_diffusion import (
         VersatileDiffusionDualGuidedPipeline,
         VersatileDiffusionImageVariationPipeline,
@@ -126,16 +145,16 @@ try:
 except OptionalDependencyNotAvailable:
     from ..utils.dummy_flax_and_transformers_objects import *  # noqa F403
 else:
+    from .controlnet import FlaxStableDiffusionControlNetPipeline
     from .stable_diffusion import (
-        FlaxStableDiffusionControlNetPipeline,
         FlaxStableDiffusionImg2ImgPipeline,
         FlaxStableDiffusionInpaintPipeline,
         FlaxStableDiffusionPipeline,
     )
 try:
-    if not (is_note_seq_available()):
+    if not (is_transformers_available() and is_torch_available() and is_note_seq_available()):
         raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
-    from ..utils.dummy_note_seq_objects import *  # noqa F403
+    from ..utils.dummy_transformers_and_torch_and_note_seq_objects import *  # noqa F403
 else:
-    from .spectrogram_diffusion import MidiProcessor
+    from .spectrogram_diffusion import MidiProcessor, SpectrogramDiffusionPipeline

@@ -11,14 +11,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import inspect
+import warnings
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
 
+from ...image_processor import VaeImageProcessor
+from ...loaders import TextualInversionLoaderMixin
 from ...models import AutoencoderKL, UNet2DConditionModel
-from ...schedulers import DDIMScheduler, PNDMScheduler
+from ...schedulers import DDIMScheduler
 from ...utils import is_accelerate_available, is_accelerate_version, logging, randn_tensor, replace_example_docstring
 from ..pipeline_utils import DiffusionPipeline
 from . import StableDiffusionPipelineOutput
@@ -47,7 +51,7 @@ EXAMPLE_DOC_STRING = """
 """
 
 
-class StableDiffusionPanoramaPipeline(DiffusionPipeline):
+class StableDiffusionPanoramaPipeline(DiffusionPipeline, TextualInversionLoaderMixin):
     r"""
     Pipeline for text-to-image generation using "MultiDiffusion: Fusing Diffusion Paths for Controlled Image
     Generation".
@@ -93,9 +97,6 @@ class StableDiffusionPanoramaPipeline(DiffusionPipeline):
     ):
         super().__init__()
 
-        if isinstance(scheduler, PNDMScheduler):
-            logger.error("PNDMScheduler for this pipeline is currently not supported.")
-
         if safety_checker is None and requires_safety_checker:
             logger.warning(
                 f"You have disabled the safety checker for {self.__class__} by passing `safety_checker=None`. Ensure"
@@ -122,6 +123,7 @@ class StableDiffusionPanoramaPipeline(DiffusionPipeline):
             feature_extractor=feature_extractor,
         )
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
+        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
         self.register_to_config(requires_safety_checker=requires_safety_checker)
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.enable_vae_slicing
@@ -230,6 +232,10 @@ class StableDiffusionPanoramaPipeline(DiffusionPipeline):
             batch_size = prompt_embeds.shape[0]
 
         if prompt_embeds is None:
+            # textual inversion: procecss multi-vector tokens if necessary
+            if isinstance(self, TextualInversionLoaderMixin):
+                prompt = self.maybe_convert_prompt(prompt, self.tokenizer)
+
             text_inputs = self.tokenizer(
                 prompt,
                 padding="max_length",
@@ -274,7 +280,7 @@ class StableDiffusionPanoramaPipeline(DiffusionPipeline):
             uncond_tokens: List[str]
             if negative_prompt is None:
                 uncond_tokens = [""] * batch_size
-            elif type(prompt) is not type(negative_prompt):
+            elif prompt is not None and type(prompt) is not type(negative_prompt):
                 raise TypeError(
                     f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !="
                     f" {type(prompt)}."
@@ -289,6 +295,10 @@ class StableDiffusionPanoramaPipeline(DiffusionPipeline):
                 )
             else:
                 uncond_tokens = negative_prompt
+
+            # textual inversion: procecss multi-vector tokens if necessary
+            if isinstance(self, TextualInversionLoaderMixin):
+                uncond_tokens = self.maybe_convert_prompt(uncond_tokens, self.tokenizer)
 
             max_length = prompt_embeds.shape[1]
             uncond_input = self.tokenizer(
@@ -328,19 +338,28 @@ class StableDiffusionPanoramaPipeline(DiffusionPipeline):
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.run_safety_checker
     def run_safety_checker(self, image, device, dtype):
-        if self.safety_checker is not None:
-            safety_checker_input = self.feature_extractor(self.numpy_to_pil(image), return_tensors="pt").to(device)
+        if self.safety_checker is None:
+            has_nsfw_concept = None
+        else:
+            if torch.is_tensor(image):
+                feature_extractor_input = self.image_processor.postprocess(image, output_type="pil")
+            else:
+                feature_extractor_input = self.image_processor.numpy_to_pil(image)
+            safety_checker_input = self.feature_extractor(feature_extractor_input, return_tensors="pt").to(device)
             image, has_nsfw_concept = self.safety_checker(
                 images=image, clip_input=safety_checker_input.pixel_values.to(dtype)
             )
-        else:
-            has_nsfw_concept = None
         return image, has_nsfw_concept
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.decode_latents
     def decode_latents(self, latents):
+        warnings.warn(
+            "The decode_latents method is deprecated and will be removed in a future version. Please"
+            " use VaeImageProcessor instead",
+            FutureWarning,
+        )
         latents = 1 / self.vae.config.scaling_factor * latents
-        image = self.vae.decode(latents).sample
+        image = self.vae.decode(latents, return_dict=False)[0]
         image = (image / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
         image = image.cpu().permute(0, 2, 3, 1).float().numpy()
@@ -577,7 +596,7 @@ class StableDiffusionPanoramaPipeline(DiffusionPipeline):
         timesteps = self.scheduler.timesteps
 
         # 5. Prepare latent variables
-        num_channels_latents = self.unet.in_channels
+        num_channels_latents = self.unet.config.in_channels
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt,
             num_channels_latents,
@@ -591,6 +610,7 @@ class StableDiffusionPanoramaPipeline(DiffusionPipeline):
 
         # 6. Define panorama grid and initialize views for synthesis.
         views = self.get_views(height, width)
+        views_scheduler_status = [copy.deepcopy(self.scheduler.__dict__)] * len(views)
         count = torch.zeros_like(latents)
         value = torch.zeros_like(latents)
 
@@ -611,12 +631,17 @@ class StableDiffusionPanoramaPipeline(DiffusionPipeline):
                 # denoised (latent) crops are then averaged to produce the final latent
                 # for the current timestep via MultiDiffusion. Please see Sec. 4.1 in the
                 # MultiDiffusion paper for more details: https://arxiv.org/abs/2302.08113
-                for h_start, h_end, w_start, w_end in views:
+                for j, (h_start, h_end, w_start, w_end) in enumerate(views):
                     # get the latents corresponding to the current view coordinates
                     latents_for_view = latents[:, :, h_start:h_end, w_start:w_end]
 
+                    # rematch block's scheduler status
+                    self.scheduler.__dict__.update(views_scheduler_status[j])
+
                     # expand the latents if we are doing classifier free guidance
-                    latent_model_input = torch.cat([latents_for_view] * 2) if do_classifier_free_guidance else latents
+                    latent_model_input = (
+                        torch.cat([latents_for_view] * 2) if do_classifier_free_guidance else latents_for_view
+                    )
                     latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
                     # predict the noise residual
@@ -636,6 +661,10 @@ class StableDiffusionPanoramaPipeline(DiffusionPipeline):
                     latents_view_denoised = self.scheduler.step(
                         noise_pred, t, latents_for_view, **extra_step_kwargs
                     ).prev_sample
+
+                    # save views scheduler status after sample
+                    views_scheduler_status[j] = copy.deepcopy(self.scheduler.__dict__)
+
                     value[:, :, h_start:h_end, w_start:w_end] += latents_view_denoised
                     count[:, :, h_start:h_end, w_start:w_end] += 1
 
@@ -648,15 +677,19 @@ class StableDiffusionPanoramaPipeline(DiffusionPipeline):
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)
 
-        # 8. Post-processing
-        image = self.decode_latents(latents)
+        if not output_type == "latent":
+            image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False)[0]
+            image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
+        else:
+            image = latents
+            has_nsfw_concept = None
 
-        # 9. Run safety checker
-        image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
+        if has_nsfw_concept is None:
+            do_denormalize = [True] * image.shape[0]
+        else:
+            do_denormalize = [not has_nsfw for has_nsfw in has_nsfw_concept]
 
-        # 10. Convert to PIL
-        if output_type == "pil":
-            image = self.numpy_to_pil(image)
+        image = self.image_processor.postprocess(image, output_type=output_type, do_denormalize=do_denormalize)
 
         if not return_dict:
             return (image, has_nsfw_concept)

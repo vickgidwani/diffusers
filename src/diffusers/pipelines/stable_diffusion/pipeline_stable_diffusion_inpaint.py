@@ -21,6 +21,7 @@ import PIL
 import torch
 from packaging import version
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
+import torchvision
 
 from ...configuration_utils import FrozenDict
 from ...image_processor import VaeImageProcessor
@@ -36,7 +37,7 @@ from .safety_checker import StableDiffusionSafetyChecker
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
-def prepare_mask_and_masked_image(image, mask, height, width, return_image: bool = False):
+def prepare_mask_and_masked_image(image, mask, height, width, mask_content, mask_fill_interp, noise_scale):
     """
     Prepares a pair (image, mask) to be consumed by the Stable Diffusion pipeline. This means that those inputs will be
     converted to ``torch.Tensor`` with shapes ``batch x channels x height x width`` where ``channels`` is ``3`` for the
@@ -144,14 +145,33 @@ def prepare_mask_and_masked_image(image, mask, height, width, return_image: bool
         mask[mask >= 0.5] = 1
         mask = torch.from_numpy(mask)
 
-    masked_image = image * (mask < 0.5)
+    if mask_content == 'clear':
+        masked_image = image * (mask < 0.5)
+    if mask_content == 'fill':
+        masked_image = torch.add(image * (mask < 0.5), mask)
+    elif mask_content == 'original':
+        masked_image = image
+    elif mask_content == 'noise':
+        masked_image = image * (mask < 0.5)
+        noise = (torch.randn_like(image) / noise_scale) * mask
+        masked_image = torch.add(masked_image, noise)
+    elif mask_content == 'added_noise':
+        noise = (torch.randn_like(image) / noise_scale) * mask
+        masked_image = torch.add(image, noise)
+    elif mask_content == 'orig_clear_interp':
+        masked_image = image * (mask < 0.5)
+        masked_image = torch.lerp(image, masked_image, mask_fill_interp)
+    elif mask_content == 'orig_fill_interp':
+        masked_image = torch.add(image * (mask < 0.5), mask)
+        masked_image = torch.lerp(image, masked_image, mask_fill_interp)
+    elif mask_content == 'noise_interp':
+        masked_image = image * (mask < 0.5)
+        noise = (torch.randn_like(image) / noise_scale) * mask
+        masked_image = torch.add(masked_image, noise)
+        masked_image = torch.lerp(image, masked_image, mask_fill_interp)
 
     # n.b. ensure backwards compatibility as old function does not return image
-    if return_image:
-        return mask, masked_image, image
-
-    return mask, masked_image
-
+    return mask, masked_image, image
 
 class StableDiffusionInpaintPipeline(DiffusionPipeline, TextualInversionLoaderMixin, LoraLoaderMixin):
     r"""
@@ -753,6 +773,9 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline, TextualInversionLoaderMi
         return_dict: bool = True,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
+        mask_content: str = 'clear',
+        mask_fill_interp: float = 0.2,
+        noise_scale: float = 1.0,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
         r"""
@@ -908,7 +931,10 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline, TextualInversionLoaderMi
             negative_prompt_embeds=negative_prompt_embeds,
         )
 
-        # 4. set timesteps
+        # 4. Preprocess mask and image
+        mask, masked_image = prepare_mask_and_masked_image(image, mask_image, height, width, mask_content, mask_fill_interp, noise_scale)
+
+        # 5. set timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps, num_inference_steps = self.get_timesteps(
             num_inference_steps=num_inference_steps, strength=strength, device=device
@@ -923,11 +949,6 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline, TextualInversionLoaderMi
         latent_timestep = timesteps[:1].repeat(batch_size * num_images_per_prompt)
         # create a boolean to check if the strength is set to 1. if so then initialise the latents with pure noise
         is_strength_max = strength == 1.0
-
-        # 5. Preprocess mask and image
-        mask, masked_image, init_image = prepare_mask_and_masked_image(
-            image, mask_image, height, width, return_image=True
-        )
 
         # 6. Prepare latent variables
         num_channels_latents = self.vae.config.latent_channels

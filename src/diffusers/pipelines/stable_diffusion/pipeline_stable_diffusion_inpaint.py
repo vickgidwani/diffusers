@@ -894,6 +894,8 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline, TextualInversionLoaderMi
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
 
+        print('here!')
+
         # 1. Check inputs
         self.check_inputs(
             prompt,
@@ -920,6 +922,8 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline, TextualInversionLoaderMi
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
 
+        print('here2!')
+
         # 3. Encode input prompt
         prompt_embeds = self._encode_prompt(
             prompt,
@@ -933,6 +937,8 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline, TextualInversionLoaderMi
 
         # 4. Preprocess mask and image
         mask, masked_image = prepare_mask_and_masked_image(image, mask_image, height, width, mask_content, mask_fill_interp, noise_scale)
+
+        print('here3!')
 
         # 5. set timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
@@ -954,6 +960,8 @@ class StableDiffusionInpaintPipeline(DiffusionPipeline, TextualInversionLoaderMi
         num_channels_latents = self.vae.config.latent_channels
         num_channels_unet = self.unet.config.in_channels
         return_image_latents = num_channels_unet == 4
+
+        print('here4!')
 
         latents_outputs = self.prepare_latents(
             batch_size * num_images_per_prompt,

@@ -59,6 +59,33 @@ EXAMPLE_DOC_STRING = """
         ```
 """
 
+class SpatialFilter:
+    def __init__(self, pos_str: str, mix_val: float):
+        pos_split = pos_str.split("-")
+        pos_div = pos_split[0].split(":")
+        pos_target = pos_split[1].split(":")
+        self.y_divisions = int(pos_div[0])
+        self.x_divisions = int(pos_div[1])
+        self.y_target = int(pos_target[0])
+        self.x_target = int(pos_target[1])
+
+        assert self.y_target < self.y_divisions
+        assert self.x_target < self.x_divisions
+
+        self.weight = mix_val
+
+    def create_tensor(self, batch_size: int, num_channels: int, height: int, width: int, device: str) -> torch.Tensor:
+
+        tensor = torch.zeros(batch_size, num_channels, height, width).to(device).to(torch.float16)
+
+        y_start = int(self.y_target / self.y_divisions * height)
+        y_end = int((self.y_target+1) / self.y_divisions * height)
+        x_start = int(self.x_target / self.x_divisions * width)
+        x_end = int((self.x_target+1) / self.x_divisions * width)
+
+        tensor[:, :, y_start:y_end, x_start:x_end] = self.weight
+
+        return tensor
 
 class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
     r"""
@@ -96,7 +123,8 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
         self,
         prompt: Union[List[str], List[List[str]]],
         pos: List[str],
-        mix_val: Union[float, List[float]] = 0.5,
+        mix_val: Union[float, List[float]],
+        mask_guidance_bootstrapping_ratio: float = 0.2,
         height: Optional[int] = None,
         width: Optional[int] = None,
         num_inference_steps: int = 50,
@@ -212,9 +240,12 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
+        composition_filters = [SpatialFilter(p, m).create_tensor(batch_size, 4, height // 8, width // 8, device) for p, m in zip(pos, mix_val)]
+
         # 7. Denoising loop
         #num_warmup_steps = len(timesteps) - num_inference_steps# * self.scheduler.order
-        for i, t in enumerate(self.progress_bar(timesteps)):
+        num_mask_guidance_bs_steps = int(mask_guidance_bootstrapping_ratio * num_inference_steps)
+        for j, t in enumerate(self.progress_bar(timesteps)):
             # expand the latents if we are doing classifier free guidance
             latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
@@ -222,91 +253,32 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
             # predict the noise residual
             noise_preds = []
             for i in range(len(prompt)):
-                noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings[i]).sample
-                noise_preds.append(noise_pred)
+                noise_preds.append(self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings[i]).sample)
             # perform guidance
             if do_classifier_free_guidance:
+                # init with unconditional noise
+                noise_pred_agg = noise_preds[0].chunk(2)[0]
 
-                # create aggregate noise predictions for each prompt with combination of
-                # unconditional noise predication and scaled text-guided noise prediciton
-                noise_pred_unconds = []
-                noise_pred_texts = []
-                for i in range(len(prompt)):
-                    noise_pred_uncond, noise_pred_text = noise_preds[i].chunk(2)
-                    noise_pred_unconds.append(noise_pred_uncond)
-                    noise_pred_texts.append(noise_pred_text)
-                noise_preds = []
-                for i in range(len(prompt)):
-                    noise_pred = noise_pred_unconds[i] + guidance_scale * (noise_pred_texts[i] - noise_pred_unconds[i])
-                    noise_preds.append(noise_pred)
-
-
-                # calculate masks as torch tensors
-                #TODO: create a filter based on pos
-                mask_list = []
-                for i in range(len(prompt)):
-                    pos_split = pos[i].split("-")
-                    # pos_div = [num_height_splits, num_width_splits]
-                    pos_div = pos_split[0].split(":")
-
-                    # pos_target = [height_split_index, width_split_index]
-                    pos_target = pos_split[1].split(":")
-
-                    # assemble the filter mask for each prompt
-                    one_filter = None
-                    zero_f = False
-
-                    # iterate through height splits
-                    for y in range(int(pos_div[0])):
-                        one_line = None
-                        zero = False
-
-                        # iterate through width splits
-                        for x in range(int(pos_div[1])):
-
-                            # we are currently targeting the desired section
-                            if (y == int(pos_target[0]) and x == int(pos_target[1])):
-                                if zero:
-                                    one_block = torch.ones(batch_size, 4, (height//8) // int(pos_div[0]), (width//8) // int(pos_div[1])).to(device).to(torch.float16) * mix_val[i]
-                                    one_line = torch.cat((one_line, one_block), 3)
-                                else:
-                                    zero = True
-                                    one_block = torch.ones(batch_size, 4, (height//8) // int(pos_div[0]), (width//8) // int(pos_div[1])).to(device).to(torch.float16) * mix_val[i]
-                                    one_line = one_block
-                            
-                            # we are not in the desired section
-                            else:
-                                if zero:
-                                    one_block = torch.zeros(batch_size, 4, (height//8) // int(pos_div[0]), (width//8) // int(pos_div[1])).to(device).to(torch.float16)
-                                    one_line = torch.cat((one_line, one_block), 3)
-                                else:
-                                    zero = True
-                                    one_block = torch.zeros(batch_size, 4, (height//8) // int(pos_div[0]), (width//8) // int(pos_div[1])).to(device).to(torch.float16)
-                                    one_line = one_block
-
-                        # if there are any unassigned splits, make sure they are accounted for here
-                        one_block = torch.zeros(batch_size, 4, (height//8) // int(pos_div[0]), (width//8) - one_line.size()[3]).to(device).to(torch.float16)
-                        one_line = torch.cat((one_line, one_block), 3)
-                        if zero_f:
-                            one_filter = torch.cat((one_filter, one_line), 2)
-                        else:
-                            zero_f = True
-                            one_filter = one_line
-                    mask_list.append(one_filter)
-                for i in range(len(mask_list)):
-                    torchvision.transforms.functional.to_pil_image(mask_list[i][0]*256).save(str(i)+".png")
-                
-                # apply guided noise pred to separate masks
-                result = noise_preds[0] * mask_list[0]
-                for i in range(1, len(prompt)):
-                    result += noise_preds[i] * mask_list[i]
+                # only attend to masks during bootstrapping
+                if j < num_mask_guidance_bs_steps:
+                    # assume the first prompt is the 'background' and skip it during bootstrapping
+                    for i in range(1, len(prompt)):
+                        noise_pred_uncond, noise_pred_cond = noise_preds[i].chunk(2)
+                        noise_pred_agg += guidance_scale * (noise_pred_cond - noise_pred_uncond) * composition_filters[i]
+                else:
+                    # create aggregate noise prediction for each prompt with combination of
+                    # unconditional noise predication and scaled text-conditioned noise prediction
+                    # apply masks
+                    for i in range(len(prompt)):
+                        noise_pred_uncond, noise_pred_cond = noise_preds[i].chunk(2)
+                        noise_pred_agg += guidance_scale * (noise_pred_cond - noise_pred_uncond) * composition_filters[i]
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(result, t, latents, **extra_step_kwargs).prev_sample
+                latents = self.scheduler.step(noise_pred_agg, t, latents, **extra_step_kwargs).prev_sample
         
                 # call the callback, if provided
-                if callback is not None and i % callback_steps == 0:
-                    callback(i, t, latents)
+                if callback is not None and j % callback_steps == 0:
+                    callback(j, t, latents)
 
         # 8. Post-processing
         image = self.decode_latents(latents)
@@ -318,10 +290,8 @@ class SpatiallyComposableStableDiffusionPipeline(StableDiffusionPipeline):
         if output_type == "pil":
             image = self.numpy_to_pil(image)
             output = []
-            for i in mask_list:
-                output.append(torchvision.transforms.functional.to_pil_image(i[0]*256))
 
         if not return_dict:
             return (image, has_nsfw_concept)
 
-        return SpatiallyComposableStableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept), output, has_nsfw_concept
+        return SpatiallyComposableStableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
